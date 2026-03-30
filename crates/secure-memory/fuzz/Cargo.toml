@@ -1,0 +1,32 @@
+[package]
+name = "secure-memory-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+secure-memory = { path = ".." }
+
+[[bin]]
+name = "fuzz_buffer_ops"
+path = "fuzz_targets/fuzz_buffer_ops.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_encrypt_decrypt"
+path = "fuzz_targets/fuzz_encrypt_decrypt.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_enclave"
+path = "fuzz_targets/fuzz_enclave.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_kdf"
+path = "fuzz_targets/fuzz_kdf.rs"
+doc = false

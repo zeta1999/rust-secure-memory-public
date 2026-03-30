@@ -1,0 +1,20 @@
+[package]
+name = "secure-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Secure encrypted text editor — demo app for secure-memory"
+
+[[bin]]
+name = "sedit"
+path = "src/main.rs"
+
+[dependencies]
+secure-memory = { path = "../secure-memory" }
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = { version = "0.7", features = ["crossterm", "search"] }
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+anyhow = "1"

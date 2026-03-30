@@ -1,0 +1,31 @@
+[package]
+name = "secure-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Secure memory management for sensitive data — Rust port of memguard"
+
+[dependencies]
+zeroize = { version = "1", features = ["zeroize_derive"] }
+chacha20poly1305 = "0.10"
+rand = "0.8"
+argon2 = "0.5"
+sha3 = "0.10"
+subtle = "2"
+thiserror = "2"
+ml-kem = "0.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+] }
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
