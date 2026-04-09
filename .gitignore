@@ -3,3 +3,6 @@
 *.swp
 *.swo
 *~
+
+# Lean4 build artifacts
+proofs/lean4/.lake/

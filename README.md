@@ -1,6 +1,23 @@
-# rust-secure-memory
+<p align="center">
+  <img src="assets/logo.svg" alt="rust-secure-memory" width="96">
+</p>
 
-Secure memory management for sensitive data in Rust — a port of Go's [memguard](https://github.com/awnumar/memguard).
+<h1 align="center">rust-secure-memory</h1>
+
+<p align="center">
+  <strong>Secure memory management for sensitive data in Rust</strong><br>
+  A port of Go's <a href="https://github.com/awnumar/memguard">memguard</a> — with post-quantum cryptography built in.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-2021_edition-orange?logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Crypto-XChaCha20--Poly1305-blue" alt="Crypto">
+  <img src="https://img.shields.io/badge/PQC-ML--KEM--768_(FIPS_203)-purple" alt="PQC">
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/Platforms-Linux_|_macOS_|_Windows-lightgrey" alt="Platforms">
+</p>
+
+---
 
 Includes **`sedit`**, a TUI encrypted text editor that demonstrates the library.
 
@@ -16,7 +33,7 @@ scripts/
   miri.sh          UB detection with Miri
 ```
 
-### secure-memory (library)
+## Core Types
 
 | Type | Purpose |
 |------|---------|
@@ -25,27 +42,29 @@ scripts/
 | `Stream` | Chunked encrypted reader/writer for large data |
 | `kem::KemKeyPair` | ML-KEM-768 (FIPS 203) post-quantum key encapsulation |
 
-**Memory protections:**
-- Guard pages (PROT_NONE) before and after data — segfault on overflow
-- `mlock` / `VirtualLock` — pins pages in RAM, prevents swap to disk
-- Canary sentinels — constant-time verified on drop to detect corruption
-- Freeze / melt — kernel-level read-only toggle via `mprotect`
-- Secure wipe via `zeroize` — defeats dead-store elimination
-- Excluded from core dumps (`MADV_DONTDUMP` on Linux)
+## Memory Protections
 
-**Cryptography:**
-- **AEAD:** XChaCha20-Poly1305 (256-bit key, 192-bit nonce)
-- **KDF:** Argon2id (memory-hard) + VDF sequential SHA3-256 stretching (time-hard)
-- **PQC:** ML-KEM-768 (FIPS 203) — post-quantum key encapsulation, shared secrets in LockedBuffer
-- **Session key:** per-process, stored in a LockedBuffer, destroyed by `purge()`
+- **Guard pages** (PROT_NONE) before and after data — segfault on overflow
+- **mlock / VirtualLock** — pins pages in RAM, prevents swap to disk
+- **Canary sentinels** — constant-time verified on drop to detect corruption
+- **Freeze / melt** — kernel-level read-only toggle via `mprotect`
+- **Secure wipe** via `zeroize` — defeats dead-store elimination
+- **Core dump exclusion** (`MADV_DONTDUMP` on Linux)
+
+## Cryptography
+
+| Layer | Algorithm | Details |
+|-------|-----------|---------|
+| **AEAD** | XChaCha20-Poly1305 | 256-bit key, 192-bit nonce |
+| **KDF** | Argon2id + VDF | Memory-hard + sequential SHA3-256 stretching |
+| **PQC** | ML-KEM-768 (FIPS 203) | Post-quantum key encapsulation, shared secrets in LockedBuffer |
+| **Session key** | Per-process | Stored in LockedBuffer, destroyed by `purge()` |
+
+> See **[PQC-ML-KEM.md](PQC-ML-KEM.md)** for a deep dive on the post-quantum cryptography integration.
 
 **Platforms:** Unix (mmap/mlock/mprotect) and Windows (VirtualAlloc/Lock/Protect)
 
-### sedit (editor)
-
-Secure encrypted text editor with multiple keybinding modes and keyword syntax highlighting.
-
-## Quick start
+## Quick Start
 
 ```bash
 # Build
@@ -67,7 +86,11 @@ echo "my-passphrase" | ./target/release/sedit --key-stdin secret.txt
 ./target/release/sedit --mode nano secret.txt
 ```
 
-### Key bindings
+## sedit — Encrypted Text Editor
+
+Secure encrypted text editor with multiple keybinding modes and keyword syntax highlighting.
+
+### Key Bindings
 
 Default (normal) mode. Use `--mode nano|emacs|mcedit` for alternatives.
 
@@ -78,7 +101,8 @@ Default (normal) mode. Use `--mode nano|emacs|mcedit` for alternatives.
 | Ctrl-H | Help screen |
 | Ctrl-E | Export as plaintext (saves `<file>.plain`) |
 
-**Keybinding modes:**
+<details>
+<summary><strong>All keybinding modes</strong></summary>
 
 | Mode | Save | Quit | Help |
 |------|------|------|------|
@@ -87,12 +111,14 @@ Default (normal) mode. Use `--mode nano|emacs|mcedit` for alternatives.
 | `emacs` | C-x C-s | C-x C-c / Esc | C-h |
 | `mcedit` | F2 | F10 / Esc | F1 |
 
-### Syntax highlighting
+</details>
+
+### Syntax Highlighting
 
 Keyword highlighting is applied automatically based on file extension. Supported:
 Rust, Python, JavaScript/TypeScript, C/C++, Go, Shell, Ruby, Java, Lua, Zig, SQL.
 
-### File format (v2)
+### File Format (v2)
 
 ```
 SEDIT\x00\x02\x00 (8 B) || salt (16 B) || nonce (24 B) || ciphertext || tag (16 B)
@@ -101,7 +127,7 @@ SEDIT\x00\x02\x00 (8 B) || salt (16 B) || nonce (24 B) || ciphertext || tag (16 
 Per-file random salt. Key derivation: passphrase → Argon2id (64 MiB, 3 iter) → VDF (1000x SHA3-256).
 Backward-compatible: v1 files (fixed salt) are still readable.
 
-## Library usage
+## Library Usage
 
 ```rust
 use secure_memory::{LockedBuffer, Enclave};
@@ -135,24 +161,24 @@ let recovered = kp.decapsulate(&ciphertext)?;
 secure_memory::purge(); // wipes all buffers + destroys session key
 ```
 
-## Security verification
+## Security Verification
 
-| Method | What it checks |
+| Method | What It Checks |
 |--------|---------------|
 | **Unit tests** (38) | Functional correctness of all primitives including ML-KEM-768 |
 | **Integration tests** (2) | Encrypted file roundtrip with per-file salt |
-| **Property tests** (proptest) | Roundtrip invariants, determinism, size constraints |
-| **Kani harnesses** | No-overflow in `round_up`, input validation in encrypt/decrypt |
-| **cargo-fuzz** (4 targets) | Buffer ops, encrypt/decrypt, enclave, KDF |
+| **Property tests** (10) | Roundtrip invariants, determinism, size constraints, KEM implicit rejection |
+| **Kani harnesses** (7) | Input validation in encrypt/decrypt/encapsulate/decapsulate, `round_up` safety |
+| **cargo-fuzz** (5 targets) | Buffer ops, encrypt/decrypt, enclave, KDF, KEM |
+| **Lean4 proofs** (18 theorems) | KEM+AEAD composition, implicit rejection, key separation, buffer wipe/purge |
 
-Run locally:
 ```bash
 ./scripts/ci.sh                              # fmt + clippy + test
 ./scripts/miri.sh                            # UB detection (needs nightly)
 cargo fuzz run fuzz_encrypt_decrypt          # fuzzing (needs nightly)
 ```
 
-## Build targets
+## Build Targets
 
 ```bash
 ./scripts/build-all.sh          # all targets
