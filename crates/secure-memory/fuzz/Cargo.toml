@@ -30,3 +30,8 @@ doc = false
 name = "fuzz_kdf"
 path = "fuzz_targets/fuzz_kdf.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_kem"
+path = "fuzz_targets/fuzz_kem.rs"
+doc = false

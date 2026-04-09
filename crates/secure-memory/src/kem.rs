@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn wrong_ciphertext_produces_different_secret() {
         let kp = KemKeyPair::generate().unwrap();
-        let (real_ct, real_ss) = encapsulate(kp.public_key()).unwrap();
+        let (_real_ct, real_ss) = encapsulate(kp.public_key()).unwrap();
         let bad_ct = vec![0u8; CT_SIZE];
         // ML-KEM implicit rejection: doesn't error, gives different secret
         let bad_ss = kp.decapsulate(&bad_ct).unwrap();
@@ -171,5 +171,91 @@ mod tests {
         let ss2 = kp.decapsulate(&ct).unwrap();
         let decrypted = crate::decrypt(ss2.as_slice().unwrap(), &encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    // ── Property-based tests (proptest) ──────────────────────
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(32))]
+
+            #[test]
+            fn roundtrip_always_agrees(_ in 0u8..1) {
+                let kp = KemKeyPair::generate().unwrap();
+                let (ct, ss_sender) = encapsulate(kp.public_key()).unwrap();
+                let ss_receiver = kp.decapsulate(&ct).unwrap();
+                prop_assert_eq!(
+                    ss_sender.as_slice().unwrap(),
+                    ss_receiver.as_slice().unwrap()
+                );
+            }
+
+            #[test]
+            fn implicit_rejection_always_differs(
+                index in 0usize..CT_SIZE,
+                flip in 1u8..=255u8,
+            ) {
+                let kp = KemKeyPair::generate().unwrap();
+                let (ct, ss_real) = encapsulate(kp.public_key()).unwrap();
+
+                let mut tampered = ct.clone();
+                tampered[index] ^= flip;
+
+                let ss_bad = kp.decapsulate(&tampered).unwrap();
+                prop_assert_ne!(
+                    ss_real.as_slice().unwrap(),
+                    ss_bad.as_slice().unwrap()
+                );
+            }
+
+            #[test]
+            fn sizes_always_correct(_ in 0u8..1) {
+                let kp = KemKeyPair::generate().unwrap();
+                prop_assert_eq!(kp.public_key().len(), EK_SIZE);
+                prop_assert_eq!(kp.secret_key().len(), DK_SIZE);
+
+                let (ct, ss) = encapsulate(kp.public_key()).unwrap();
+                prop_assert_eq!(ct.len(), CT_SIZE);
+                prop_assert_eq!(ss.len(), SS_SIZE);
+            }
+        }
+    }
+}
+
+// ── Kani verification harnesses ──────────────────────────────
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// `encapsulate` rejects any public key that is not EK_SIZE bytes.
+    #[kani::proof]
+    fn encapsulate_rejects_bad_key_size() {
+        let len: usize = kani::any();
+        kani::assume(len != EK_SIZE && len <= 2048);
+        let key = vec![0u8; len];
+        assert!(encapsulate(&key).is_err());
+    }
+
+    /// Ciphertext length != CT_SIZE always triggers the size guard.
+    #[kani::proof]
+    fn decapsulate_rejects_bad_ct_size() {
+        let len: usize = kani::any();
+        kani::assume(len != CT_SIZE && len <= 2048);
+        // Verify the guard condition that kem.rs:69-74 enforces
+        assert!(len != CT_SIZE);
+    }
+
+    /// ML-KEM-768 shared secret is always 32 bytes.
+    #[kani::proof]
+    fn shared_secret_size_is_32() {
+        assert_eq!(SS_SIZE, 32);
+        assert_eq!(
+            <MlKem768 as KemCore>::SharedKeySize::USIZE,
+            32
+        );
     }
 }

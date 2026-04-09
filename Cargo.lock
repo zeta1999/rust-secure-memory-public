@@ -1031,6 +1031,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "secure-memory-examples"
+version = "0.1.0"
+dependencies = [
+ "secure-memory",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,9 @@
+[package]
+name = "secure-memory-examples"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "secure-memory API usage examples involving ML-KEM-768 post-quantum key encapsulation"
+
+[dependencies]
+secure-memory = { path = "../secure-memory" }
