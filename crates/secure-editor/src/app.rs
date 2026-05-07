@@ -25,31 +25,32 @@ pub fn run(
 
     let file_exists = path.as_ref().is_some_and(|p| p.exists());
 
-    let (initial_text, key, salt) = if plaintext_mode {
+    let (initial_text, key, salt, kdf_params) = if plaintext_mode {
         let text = if file_exists {
             file_io::load_plaintext(path.as_ref().unwrap())?
         } else {
             String::new()
         };
-        (text, None, None)
+        (text, None, None, None)
     } else if file_exists {
         if file_io::is_encrypted(path.as_ref().unwrap())? {
-            // Existing encrypted file — read salt from header, derive key
+            // Existing encrypted file — read header, derive key with stored params
             let password = key_prompt::prompt_password(key_stdin, true)?;
-            let (text, key, salt) = file_io::load(path.as_ref().unwrap(), &password)?;
-            (text, Some(key), Some(salt))
+            let (text, key, salt, params) = file_io::load(path.as_ref().unwrap(), &password)?;
+            (text, Some(key), Some(salt), Some(params))
         } else {
             // Existing plaintext file
             eprintln!("File is plaintext. Opening without encryption.");
             let text = file_io::load_plaintext(path.as_ref().unwrap())?;
-            (text, None, None)
+            (text, None, None, None)
         }
     } else {
-        // New file — generate random salt, derive key
+        // New file — generate random salt, derive key with default params
         let password = key_prompt::prompt_password(key_stdin, false)?;
         let salt = file_io::new_salt();
-        let key = file_io::derive_file_key(&password, &salt)?;
-        (String::new(), Some(key), Some(salt))
+        let params = file_io::KdfParams::DEFAULT;
+        let key = file_io::derive_file_key(&password, &salt, &params)?;
+        (String::new(), Some(key), Some(salt), Some(params))
     };
 
     // ── 2. Set up terminal ───────────────────────────────────
@@ -62,7 +63,7 @@ pub fn run(
 
     // ── 3. Run editor ────────────────────────────────────────
 
-    let mut editor = Editor::new(path, key, salt, &initial_text, mode);
+    let mut editor = Editor::new(path, key, salt, kdf_params, &initial_text, mode);
     let result = editor.run(&mut terminal);
 
     // ── 4. Restore terminal ──────────────────────────────────

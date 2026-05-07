@@ -15,6 +15,7 @@ cargo test --all
 ```
 
 This runs:
+
 - 38 library unit tests (buffer, crypto, enclave, stream, platform, ML-KEM-768)
 - 10 property-based tests (proptest roundtrips, invariants, determinism, KEM implicit rejection)
 - 2 integration tests (encrypted file roundtrip with per-file salt, wrong-key rejection)
@@ -48,12 +49,12 @@ echo "my-passphrase" | ./target/release/sedit --key-stdin /tmp/test.txt
 
 ### Editor keys (default/normal mode)
 
-| Key          | Action                                  |
-|--------------|-----------------------------------------|
-| Ctrl-S       | Save                                    |
-| Esc / Ctrl-Q | Quit (press twice to discard unsaved)   |
-| Ctrl-H       | Help                                    |
-| Ctrl-E       | Export as plaintext (`<file>.plain`)     |
+| Key          | Action                                 |
+| ------------ | -------------------------------------- |
+| Ctrl-S       | Save                                   |
+| Esc / Ctrl-Q | Quit (press twice to discard unsaved)  |
+| Ctrl-H       | Help                                   |
+| Ctrl-E       | Export as plaintext (`<file>.plain`) |
 
 ## Formal verification
 
@@ -68,20 +69,29 @@ rustup toolchain install nightly --component miri
 
 ### Fuzzing
 
-Requires Rust nightly and cargo-fuzz:
+Requires Rust nightly, cargo-fuzz, and (on first build) network access to fetch
+`libfuzzer-sys` from crates.io — it is not vendored.
 
 ```bash
 cargo install cargo-fuzz
+rustup toolchain install nightly
 
-cd crates/secure-memory
-
-# Run a specific fuzz target (30 seconds)
-cargo +nightly fuzz run fuzz_encrypt_decrypt -- -max_total_time=30
-cargo +nightly fuzz run fuzz_buffer_ops -- -max_total_time=30
-cargo +nightly fuzz run fuzz_enclave -- -max_total_time=30
-cargo +nightly fuzz run fuzz_kdf -- -max_total_time=30
-cargo +nightly fuzz run fuzz_kem -- -max_total_time=30
+# Run a specific fuzz target (30 seconds each).
+./scripts/fuzz.sh fuzz_encrypt_decrypt -- -max_total_time=30
+./scripts/fuzz.sh fuzz_buffer_ops      -- -max_total_time=30
+./scripts/fuzz.sh fuzz_enclave         -- -max_total_time=30
+./scripts/fuzz.sh fuzz_kdf             -- -max_total_time=30
+./scripts/fuzz.sh fuzz_kem             -- -max_total_time=30
 ```
+
+The wrapper handles the toolchain plumbing that bare `cargo +nightly fuzz`
+gets wrong on common setups: it uses the rustup proxy explicitly (some shells
+have the stable toolchain `cargo` on PATH directly, which doesn't recognize
+`+nightly`), prepends the nightly toolchain `bin/` to `PATH` (so the inner
+`cargo build` cargo-fuzz spawns also resolves to nightly), and runs from a
+directory outside the workspace so the workspace's vendor source-replacement
+in `.cargo/config.toml` doesn't intercept the `libfuzzer-sys` lookup. See
+[`scripts/fuzz.sh`](scripts/fuzz.sh) for the full rationale.
 
 ### Kani (bounded model checking)
 
@@ -92,6 +102,7 @@ cargo kani -p secure-memory
 ```
 
 Verifies:
+
 - `round_up` never overflows and is idempotent
 - `decrypt` rejects inputs shorter than the nonce
 - `encrypt` rejects keys that aren't 32 bytes
@@ -129,4 +140,4 @@ See [`proofs/lean4/SecureMemory/Main.lean`](proofs/lean4/SecureMemory/Main.lean)
 ./scripts/build-all.sh
 ```
 
-Binaries are placed in `dist/`.
+Binaries are placed in `dist/`. Expect error messages if you do not have the full cross-compile tools suite installed.

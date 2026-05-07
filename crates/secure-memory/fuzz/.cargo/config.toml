@@ -1,0 +1,14 @@
+# Override the workspace-root `.cargo/config.toml`, which redirects crates-io
+# to the vendored sources. The fuzz crate depends on `libfuzzer-sys` (and its
+# transitive deps), which are not vendored in `/vendor` and would otherwise
+# fail with "no matching package named `libfuzzer-sys` found".
+#
+# Cargo merges configs walking up from the manifest with closer files winning
+# per key. Pointing `replace-with` at a fresh source defined here overrides
+# the workspace's `replace-with = "vendored-sources"` for fuzz builds only.
+
+[source.crates-io]
+replace-with = "crates-io-direct"
+
+[source.crates-io-direct]
+registry = "https://github.com/rust-lang/crates.io-index"
