@@ -39,8 +39,10 @@ pub mod buffer;
 pub mod crypto;
 pub mod enclave;
 pub mod error;
+pub mod hybrid_kem;
 pub mod kem;
 pub mod platform;
+pub mod sig;
 pub mod stream;
 
 // ── Re-exports ───────────────────────────────────────────────
@@ -50,7 +52,12 @@ pub use enclave::Enclave;
 pub use error::Error;
 pub use stream::Stream;
 
-pub use crypto::{decrypt, derive_key_argon2, derive_key_combined, encrypt, vdf_stretch};
+#[allow(deprecated)]
+pub use crypto::vdf_stretch;
+pub use crypto::{
+    decrypt, decrypt_aad, derive_key_argon2, derive_key_combined, encrypt, encrypt_aad,
+    sequential_stretch,
+};
 
 // ── Global operations ────────────────────────────────────────
 
@@ -77,10 +84,12 @@ pub fn safe_panic(msg: &str) -> ! {
 
 // ── Utility functions ────────────────────────────────────────
 
-/// Overwrite `data` with cryptographically-secure random bytes.
+/// Overwrite `data` with cryptographically-secure random bytes from
+/// the operating system's CSPRNG.
 pub fn scramble_bytes(data: &mut [u8]) {
+    use rand::rngs::OsRng;
     use rand::RngCore;
-    rand::thread_rng().fill_bytes(data);
+    OsRng.fill_bytes(data);
 }
 
 /// Overwrite `data` with zeros (using [`zeroize`] to prevent dead-store

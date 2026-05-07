@@ -29,6 +29,7 @@ pub struct Editor<'a> {
     path: Option<PathBuf>,
     key: Option<LockedBuffer>,
     salt: Option<[u8; SALT_SIZE]>,
+    kdf_params: Option<file_io::KdfParams>,
     modified: bool,
     status_msg: String,
     show_help: bool,
@@ -43,6 +44,7 @@ impl<'a> Editor<'a> {
         path: Option<PathBuf>,
         key: Option<LockedBuffer>,
         salt: Option<[u8; SALT_SIZE]>,
+        kdf_params: Option<file_io::KdfParams>,
         initial_text: &str,
         mode: KeyMode,
     ) -> Self {
@@ -104,6 +106,7 @@ impl<'a> Editor<'a> {
             path,
             key,
             salt,
+            kdf_params,
             modified: false,
             status_msg,
             show_help: false,
@@ -299,8 +302,8 @@ impl<'a> Editor<'a> {
             }
         };
         let text = self.textarea.lines().join("\n");
-        let result = match (&self.key, &self.salt) {
-            (Some(key), Some(salt)) => file_io::save(&path, &text, key, salt),
+        let result = match (&self.key, &self.salt, &self.kdf_params) {
+            (Some(key), Some(salt), Some(params)) => file_io::save(&path, &text, key, salt, params),
             _ => file_io::save_plaintext(&path, &text),
         };
         match result {

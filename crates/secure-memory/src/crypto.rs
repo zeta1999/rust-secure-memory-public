@@ -3,7 +3,9 @@
 
 use std::sync::{LazyLock, Mutex};
 
-use chacha20poly1305::{aead::Aead, aead::KeyInit, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use rand::rngs::OsRng;
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
 use zeroize::Zeroize;
@@ -50,10 +52,13 @@ pub fn destroy_session_key() {
 
 // ── XChaCha20-Poly1305 AEAD ─────────────────────────────────
 
-/// Encrypt `plaintext` with a 32-byte `key`.
+/// Encrypt `plaintext` with a 32-byte `key` and optional Additional
+/// Authenticated Data (`aad`). The AAD is bound into the Poly1305 tag
+/// but is **not** stored in the output — the caller must convey it
+/// alongside the ciphertext (e.g. as a file header).
 ///
 /// Returns `nonce (24 B) || ciphertext || tag (16 B)`.
-pub fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn encrypt_aad(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
     if key.len() != KEY_SIZE {
         return Err(Error::InvalidKeySize {
             expected: KEY_SIZE,
@@ -65,11 +70,17 @@ pub fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
         .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = XNonce::from_slice(&nonce_bytes);
 
     let ct = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
 
     let mut out = Vec::with_capacity(NONCE_SIZE + ct.len());
@@ -78,10 +89,10 @@ pub fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Decrypt data produced by [`encrypt`].
+/// Decrypt data produced by [`encrypt_aad`]; the same `aad` must be supplied.
 ///
 /// Input format: `nonce (24 B) || ciphertext || tag (16 B)`.
-pub fn decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn decrypt_aad(key: &[u8], data: &[u8], aad: &[u8]) -> Result<Vec<u8>, Error> {
     if key.len() != KEY_SIZE {
         return Err(Error::InvalidKeySize {
             expected: KEY_SIZE,
@@ -98,8 +109,23 @@ pub fn decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
     let nonce = XNonce::from_slice(nonce_bytes);
 
     cipher
-        .decrypt(nonce, ct)
+        .decrypt(nonce, Payload { msg: ct, aad })
         .map_err(|e| Error::DecryptionFailed(e.to_string()))
+}
+
+/// Encrypt `plaintext` with a 32-byte `key` and no Additional Authenticated
+/// Data. Equivalent to [`encrypt_aad`] with empty AAD.
+///
+/// Returns `nonce (24 B) || ciphertext || tag (16 B)`.
+pub fn encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    encrypt_aad(key, plaintext, &[])
+}
+
+/// Decrypt data produced by [`encrypt`].
+///
+/// Input format: `nonce (24 B) || ciphertext || tag (16 B)`.
+pub fn decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
+    decrypt_aad(key, data, &[])
 }
 
 // ── Key Derivation ───────────────────────────────────────────
@@ -127,11 +153,12 @@ pub fn derive_key_argon2(
     Ok(key)
 }
 
-/// **VDF-style** sequential stretching: iterate SHA3-256 `iterations` times.
+/// Sequential SHA3-256 stretching: iterate SHA3-256 `iterations` times.
 ///
-/// Not a true VDF (no efficient verification), but provides provable
-/// sequential work that resists parallelisation.
-pub fn vdf_stretch(input: &[u8], iterations: u64) -> [u8; 32] {
+/// Forces serial work (resists parallelisation) but is **not** a verifiable
+/// delay function — there is no efficient way to prove `iterations` rounds
+/// were actually performed.
+pub fn sequential_stretch(input: &[u8], iterations: u64) -> [u8; 32] {
     let mut hash = Sha3_256::digest(input);
     for _ in 1..iterations {
         hash = Sha3_256::digest(hash);
@@ -141,18 +168,31 @@ pub fn vdf_stretch(input: &[u8], iterations: u64) -> [u8; 32] {
     out
 }
 
-/// **Combined KDF**: Argon2id (memory-hard) then VDF stretch (time-hard).
+/// Deprecated alias for [`sequential_stretch`]. Original name was misleading
+/// (no verification step) — kept for backwards compatibility.
+#[deprecated(
+    since = "0.2.0",
+    note = "use sequential_stretch — this is not a true VDF"
+)]
+pub fn vdf_stretch(input: &[u8], iterations: u64) -> [u8; 32] {
+    sequential_stretch(input, iterations)
+}
+
+/// **Combined KDF**: Argon2id (memory-hard) then sequential SHA3-256 stretch
+/// (time-hard).
 ///
-/// This makes brute-force both memory-intensive and provably sequential.
+/// Brute-force is both memory-intensive (Argon2id) and provably serial
+/// (`sequential_stretch`). The third numeric parameter is iteration count of
+/// the SHA3-256 chain.
 pub fn derive_key_combined(
     password: &[u8],
     salt: &[u8],
     argon2_memory_kib: u32,
     argon2_iterations: u32,
-    vdf_iterations: u64,
+    sequential_iterations: u64,
 ) -> Result<[u8; 32], Error> {
     let mut argon2_key = derive_key_argon2(password, salt, argon2_memory_kib, argon2_iterations)?;
-    let stretched = vdf_stretch(&argon2_key, vdf_iterations);
+    let stretched = sequential_stretch(&argon2_key, sequential_iterations);
     argon2_key.zeroize();
     Ok(stretched)
 }
@@ -196,6 +236,10 @@ mod tests {
         assert_eq!(dec, pt);
     }
 
+    // Argon2 is memory-hard by design. Under Miri's interpreter (~100–1000× slower
+    // than native, no SIMD) a single derivation can take 10–100s, so we skip Argon2
+    // tests under Miri. Native `cargo test` still exercises them.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn argon2_deterministic() {
         let pw = b"password";
@@ -207,13 +251,14 @@ mod tests {
     }
 
     #[test]
-    fn vdf_deterministic() {
-        let r1 = vdf_stretch(b"input", 100);
-        let r2 = vdf_stretch(b"input", 100);
+    fn sequential_stretch_deterministic() {
+        let r1 = sequential_stretch(b"input", 100);
+        let r2 = sequential_stretch(b"input", 100);
         assert_eq!(r1, r2);
         assert_eq!(r1.len(), 32);
     }
 
+    #[cfg_attr(miri, ignore)] // calls Argon2 — see argon2_deterministic
     #[test]
     fn combined_kdf() {
         let key = derive_key_combined(b"pass", b"saltsalt", 1024, 1, 10).unwrap();
@@ -227,7 +272,11 @@ mod tests {
     }
 
     // ── Property-based tests (proptest) ──────────────────────
-
+    //
+    // Proptest fires 256 cases per test by default. Each case here runs a full
+    // ChaCha20-Poly1305 encrypt/decrypt cycle, which is ~100× slower under Miri
+    // than native. Skip under Miri; native `cargo test` covers them.
+    #[cfg(not(miri))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;
@@ -254,13 +303,31 @@ mod tests {
             }
 
             #[test]
-            fn vdf_is_deterministic(
+            fn sequential_stretch_is_deterministic(
                 input in proptest::collection::vec(any::<u8>(), 1..128),
                 iters in 1u64..50,
             ) {
-                let a = vdf_stretch(&input, iters);
-                let b = vdf_stretch(&input, iters);
+                let a = sequential_stretch(&input, iters);
+                let b = sequential_stretch(&input, iters);
                 prop_assert_eq!(a, b);
+            }
+
+            #[test]
+            fn aad_binding_detects_modification(
+                key in proptest::collection::vec(any::<u8>(), 32),
+                pt in proptest::collection::vec(any::<u8>(), 0..256),
+                aad in proptest::collection::vec(any::<u8>(), 1..64),
+                tampered_idx in 0usize..64,
+                flip in 1u8..=255u8,
+            ) {
+                let ct = encrypt_aad(&key, &pt, &aad).unwrap();
+                // Same AAD: succeeds.
+                prop_assert_eq!(decrypt_aad(&key, &ct, &aad).unwrap(), pt.clone());
+                // Tampered AAD: fails.
+                let mut bad_aad = aad.clone();
+                let i = tampered_idx % bad_aad.len();
+                bad_aad[i] ^= flip;
+                prop_assert!(decrypt_aad(&key, &ct, &bad_aad).is_err());
             }
         }
     }

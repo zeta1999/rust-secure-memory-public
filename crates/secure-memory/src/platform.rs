@@ -85,7 +85,7 @@ pub unsafe fn dont_dump(ptr: *mut u8, len: usize) {
 
 // ── Unix implementation ──────────────────────────────────────
 
-#[cfg(unix)]
+#[cfg(all(unix, not(miri)))]
 mod sys {
     use crate::error::Error;
 
@@ -164,7 +164,7 @@ mod sys {
 
 // ── Windows implementation ───────────────────────────────────
 
-#[cfg(windows)]
+#[cfg(all(windows, not(miri)))]
 mod sys {
     use crate::error::Error;
     use windows_sys::Win32::System::Memory::*;
@@ -231,6 +231,62 @@ mod sys {
     pub unsafe fn dont_dump(_ptr: *mut u8, _len: usize) {
         // No equivalent on Windows
     }
+}
+
+// ── Miri implementation ──────────────────────────────────────
+//
+// Under Miri, OS-level FFI like `mmap`/`mlock`/`mprotect` is unsupported. Use
+// the global allocator and no-op the protection calls so Miri can still
+// validate the algorithmic code (provenance, layout, drop order, AEAD/KEM
+// logic). The OS-protection guarantees aren't something Miri can verify
+// anyway — they're enforced by the kernel at runtime.
+
+#[cfg(miri)]
+mod sys {
+    use crate::error::Error;
+    use std::alloc::{alloc, dealloc, Layout};
+
+    const PAGE_SIZE: usize = 4096;
+
+    fn layout(size: usize) -> Layout {
+        Layout::from_size_align(size, PAGE_SIZE).expect("page-aligned layout")
+    }
+
+    pub fn page_size() -> usize {
+        PAGE_SIZE
+    }
+
+    pub unsafe fn alloc_mem(size: usize) -> Result<*mut u8, Error> {
+        let ptr = alloc(layout(size));
+        if ptr.is_null() {
+            return Err(Error::AllocationFailed);
+        }
+        Ok(ptr)
+    }
+
+    pub unsafe fn free_mem(ptr: *mut u8, size: usize) {
+        dealloc(ptr, layout(size));
+    }
+
+    pub unsafe fn lock(_ptr: *mut u8, _len: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub unsafe fn unlock(_ptr: *mut u8, _len: usize) {}
+
+    pub unsafe fn protect_none(_ptr: *mut u8, _len: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub unsafe fn protect_read(_ptr: *mut u8, _len: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub unsafe fn protect_rw(_ptr: *mut u8, _len: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    pub unsafe fn dont_dump(_ptr: *mut u8, _len: usize) {}
 }
 
 #[cfg(test)]

@@ -41,7 +41,7 @@ pub struct KemKeyPair {
 impl KemKeyPair {
     /// Generate a fresh ML-KEM-768 key pair.
     pub fn generate() -> Result<Self, Error> {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::OsRng;
         let (dk, ek) = MlKem768::generate(&mut rng);
 
         let ek_bytes = ek.as_bytes().to_vec();
@@ -107,7 +107,7 @@ pub fn encapsulate(public_key: &[u8]) -> Result<(Vec<u8>, LockedBuffer), Error> 
         .map_err(|_| Error::InvalidSize("bad EK length".into()))?;
     let ek = EncapsulationKey::<MlKem768Params>::from_bytes(&ek_arr);
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
     use ml_kem::kem::Encapsulate;
     let (ct, ss): (Ciphertext<MlKem768>, SharedKey<MlKem768>) = ek
         .encapsulate(&mut rng)
@@ -124,6 +124,12 @@ pub fn encapsulate(public_key: &[u8]) -> Result<(Vec<u8>, LockedBuffer), Error> 
 mod tests {
     use super::*;
 
+    // ML-KEM-768 keygen / encap / decap each take ~1–2 s under Miri's interpreter
+    // (vs. ~1 ms native). Tests that exercise these primitives are skipped under
+    // Miri; native `cargo test` covers them. Cheap size-validation tests (no
+    // keygen) still run under Miri to exercise input-handling logic.
+
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn keygen_produces_correct_sizes() {
         let kp = KemKeyPair::generate().unwrap();
@@ -131,6 +137,7 @@ mod tests {
         assert_eq!(kp.secret_key().len(), DK_SIZE);
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn encapsulate_decapsulate_roundtrip() {
         let kp = KemKeyPair::generate().unwrap();
@@ -145,6 +152,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn wrong_ciphertext_produces_different_secret() {
         let kp = KemKeyPair::generate().unwrap();
@@ -160,6 +168,7 @@ mod tests {
         assert!(encapsulate(&[0u8; 100]).is_err());
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn shared_secret_can_encrypt() {
         let kp = KemKeyPair::generate().unwrap();
@@ -174,7 +183,8 @@ mod tests {
     }
 
     // ── Property-based tests (proptest) ──────────────────────
-
+    // Skipped under Miri: each case runs ML-KEM keygen + encap + decap.
+    #[cfg(not(miri))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;
@@ -230,6 +240,10 @@ mod tests {
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
+    // `Unsigned::USIZE` reads the compile-time value of a typenum-encoded
+    // associated size. The trait is reachable here through sha3's re-export
+    // (typenum is not a direct dependency of this crate).
+    use sha3::digest::typenum::Unsigned;
 
     /// `encapsulate` rejects any public key that is not EK_SIZE bytes.
     #[kani::proof]
@@ -253,9 +267,6 @@ mod kani_proofs {
     #[kani::proof]
     fn shared_secret_size_is_32() {
         assert_eq!(SS_SIZE, 32);
-        assert_eq!(
-            <MlKem768 as KemCore>::SharedKeySize::USIZE,
-            32
-        );
+        assert_eq!(<MlKem768 as KemCore>::SharedKeySize::USIZE, 32);
     }
 }

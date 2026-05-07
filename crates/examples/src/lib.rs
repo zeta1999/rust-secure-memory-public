@@ -28,7 +28,10 @@ mod tests {
         // Bob decapsulates to recover the same shared secret
         let recovered = kp.decapsulate(&ciphertext).unwrap();
 
-        assert_eq!(shared_secret.as_slice().unwrap(), recovered.as_slice().unwrap());
+        assert_eq!(
+            shared_secret.as_slice().unwrap(),
+            recovered.as_slice().unwrap()
+        );
     }
 
     // ── 2. End-to-end encrypted message ─────────────────────────
@@ -63,10 +66,7 @@ mod tests {
         let key2 = ss2.as_slice().unwrap();
 
         let messages: Vec<&[u8]> = vec![b"msg-1: hello", b"msg-2: world", b"msg-3: done"];
-        let encrypted: Vec<Vec<u8>> = messages
-            .iter()
-            .map(|m| encrypt(key, m).unwrap())
-            .collect();
+        let encrypted: Vec<Vec<u8>> = messages.iter().map(|m| encrypt(key, m).unwrap()).collect();
 
         for (i, enc) in encrypted.iter().enumerate() {
             let pt = decrypt(key2, enc).unwrap();
@@ -104,10 +104,8 @@ mod tests {
         let key = ss.as_slice().unwrap();
 
         let chunks: Vec<&[u8]> = vec![b"chunk-1-data...", b"chunk-2-data...", b"chunk-3-end"];
-        let encrypted_chunks: Vec<Vec<u8>> = chunks
-            .iter()
-            .map(|c| encrypt(key, c).unwrap())
-            .collect();
+        let encrypted_chunks: Vec<Vec<u8>> =
+            chunks.iter().map(|c| encrypt(key, c).unwrap()).collect();
 
         // Receiver decapsulates and decrypts each chunk
         let ss2 = kp.decapsulate(&kem_ct).unwrap();
@@ -135,9 +133,7 @@ mod tests {
 
     #[test]
     fn multi_recipient() {
-        let recipients: Vec<KemKeyPair> = (0..3)
-            .map(|_| KemKeyPair::generate().unwrap())
-            .collect();
+        let recipients: Vec<KemKeyPair> = (0..3).map(|_| KemKeyPair::generate().unwrap()).collect();
 
         let message = b"broadcast to all agents";
 

@@ -13,6 +13,8 @@
   <img src="https://img.shields.io/badge/Rust-2021_edition-orange?logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/Crypto-XChaCha20--Poly1305-blue" alt="Crypto">
   <img src="https://img.shields.io/badge/PQC-ML--KEM--768_(FIPS_203)-purple" alt="PQC">
+  <img src="https://img.shields.io/badge/PQC-ML--DSA--65_(FIPS_204)-purple" alt="PQC Sigs">
+  <img src="https://img.shields.io/badge/Hybrid-ML--KEM%2BX25519-purple" alt="Hybrid">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/Platforms-Linux_|_macOS_|_Windows-lightgrey" alt="Platforms">
 </p>
@@ -41,6 +43,8 @@ scripts/
 | `Enclave` | Encrypted-at-rest container (XChaCha20-Poly1305 session key) |
 | `Stream` | Chunked encrypted reader/writer for large data |
 | `kem::KemKeyPair` | ML-KEM-768 (FIPS 203) post-quantum key encapsulation |
+| `hybrid_kem::HybridKemKeyPair` | Hybrid ML-KEM-768 + X25519 KEM (PQC + classical) |
+| `sig::SigKeyPair` | ML-DSA-65 (FIPS 204) post-quantum signatures |
 
 ## Memory Protections
 
@@ -55,9 +59,12 @@ scripts/
 
 | Layer | Algorithm | Details |
 |-------|-----------|---------|
-| **AEAD** | XChaCha20-Poly1305 | 256-bit key, 192-bit nonce |
-| **KDF** | Argon2id + VDF | Memory-hard + sequential SHA3-256 stretching |
-| **PQC** | ML-KEM-768 (FIPS 203) | Post-quantum key encapsulation, shared secrets in LockedBuffer |
+| **AEAD** | XChaCha20-Poly1305 | 256-bit key, 192-bit nonce, **AAD-aware** (`encrypt_aad`/`decrypt_aad`) |
+| **KDF** | Argon2id + sequential SHA3-256 | Memory-hard + serial-work stretching |
+| **PQC KEM** | ML-KEM-768 (FIPS 203) | Post-quantum key encapsulation, shared secrets in LockedBuffer |
+| **Hybrid KEM** | ML-KEM-768 + X25519 | SHA3-256 combiner — break in either primitive alone is survivable |
+| **PQC signatures** | ML-DSA-65 (FIPS 204) | Deterministic signing, signing key in LockedBuffer |
+| **RNG** | `OsRng` | OS CSPRNG for all crypto entropy (nonces, salts, KEM/sig randomness) |
 | **Session key** | Per-process | Stored in LockedBuffer, destroyed by `purge()` |
 
 > See **[PQC-ML-KEM.md](PQC-ML-KEM.md)** for a deep dive on the post-quantum cryptography integration.
@@ -118,14 +125,28 @@ Default (normal) mode. Use `--mode nano|emacs|mcedit` for alternatives.
 Keyword highlighting is applied automatically based on file extension. Supported:
 Rust, Python, JavaScript/TypeScript, C/C++, Go, Shell, Ruby, Java, Lua, Zig, SQL.
 
-### File Format (v2)
+### File Format (v3)
 
 ```
-SEDIT\x00\x02\x00 (8 B) || salt (16 B) || nonce (24 B) || ciphertext || tag (16 B)
+header (40 B, plaintext, bound as AEAD AAD):
+  magic       "SEDIT\x00\x03\x00"     8 B
+  argon2_m    big-endian u32          4 B   (Argon2id memory cost in KiB)
+  argon2_t    big-endian u32          4 B   (Argon2id iteration count)
+  seq_rounds  big-endian u64          8 B   (sequential SHA3-256 rounds)
+  salt        random                  16 B
+body:
+  nonce       random                  24 B
+  ciphertext  variable
+  tag         Poly1305                16 B
 ```
 
-Per-file random salt. Key derivation: passphrase → Argon2id (64 MiB, 3 iter) → VDF (1000x SHA3-256).
-Backward-compatible: v1 files (fixed salt) are still readable.
+The header — including KDF parameters and salt — is **authenticated** as
+Additional Authenticated Data; tampering with magic, parameters, or salt is
+detected at decryption. KDF parameters are stored per-file so future tuning
+of the defaults stays compatible with files in the wild.
+
+Default KDF: Argon2id (64 MiB, 3 iter) → sequential SHA3-256 stretch (1000 rounds).
+Backward-compatible: v1 (fixed salt) and v2 (per-file salt, unauthenticated header) remain readable.
 
 ## Library Usage
 
@@ -157,6 +178,23 @@ let kp = KemKeyPair::generate()?;
 let (ciphertext, shared_secret) = encapsulate(kp.public_key())?;
 let recovered = kp.decapsulate(&ciphertext)?;
 
+// Hybrid KEM (ML-KEM-768 + X25519): survives a break in either primitive
+use secure_memory::hybrid_kem::{HybridKemKeyPair, encapsulate as hybrid_encap};
+let hkp = HybridKemKeyPair::generate()?;
+let (h_ct, h_ss) = hybrid_encap(&hkp.public_key())?;
+let h_ss2 = hkp.decapsulate(&h_ct)?;
+
+// Post-quantum signatures (ML-DSA-65, FIPS 204)
+use secure_memory::sig::SigKeyPair;
+let sk = SigKeyPair::generate()?;
+let signature = sk.sign(b"message")?;
+assert!(SigKeyPair::verify(sk.verifying_key(), b"message", &signature)?);
+
+// AEAD with Additional Authenticated Data — bind a header to the tag
+let header = b"file-format-v3-header";
+let blob = secure_memory::encrypt_aad(&key_bytes, b"plaintext", header)?;
+let pt = secure_memory::decrypt_aad(&key_bytes, &blob, header)?;
+
 // Nuclear cleanup
 secure_memory::purge(); // wipes all buffers + destroys session key
 ```
@@ -165,9 +203,9 @@ secure_memory::purge(); // wipes all buffers + destroys session key
 
 | Method | What It Checks |
 |--------|---------------|
-| **Unit tests** (38) | Functional correctness of all primitives including ML-KEM-768 |
-| **Integration tests** (2) | Encrypted file roundtrip with per-file salt |
-| **Property tests** (10) | Roundtrip invariants, determinism, size constraints, KEM implicit rejection |
+| **Unit tests** (60+) | All primitives including ML-KEM-768, hybrid KEM, ML-DSA-65, AAD-bound AEAD |
+| **Integration tests** (5) | v3 file roundtrip + tamper detection on header / KDF params / wrong password |
+| **Property tests** (12+) | Roundtrip invariants, determinism, size constraints, KEM implicit rejection, hybrid CT bit-flips, ML-DSA verify, AAD binding |
 | **Kani harnesses** (7) | Input validation in encrypt/decrypt/encapsulate/decapsulate, `round_up` safety |
 | **cargo-fuzz** (5 targets) | Buffer ops, encrypt/decrypt, enclave, KDF, KEM |
 | **Lean4 proofs** (18 theorems) | KEM+AEAD composition, implicit rejection, key separation, buffer wipe/purge |

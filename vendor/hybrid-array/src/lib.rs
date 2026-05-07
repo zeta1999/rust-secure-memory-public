@@ -22,7 +22,6 @@
     clippy::unwrap_used,
     missing_docs,
     missing_debug_implementations,
-    rust_2018_idioms,
     trivial_casts,
     trivial_numeric_casts,
     unused_lifetimes,
@@ -134,6 +133,9 @@ use typenum::{Diff, Sum};
 #[cfg(feature = "bytemuck")]
 use bytemuck::{Pod, Zeroable};
 
+#[cfg(feature = "subtle")]
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -232,7 +234,16 @@ where
         U: Add<N>,
         Sum<U, N>: ArraySize,
     {
-        self.into_iter().chain(other).collect()
+        let mut c = Array::uninit();
+        let (left, right) = c.split_at_mut(self.len());
+        for (val, dst) in self.into_iter().zip(left) {
+            dst.write(val);
+        }
+        for (val, dst) in other.into_iter().zip(right) {
+            dst.write(val);
+        }
+        // SAFETY: We wrote to every element of `c`.
+        unsafe { c.assume_init() }
     }
 
     /// Splits `self` at index `N` in two arrays.
@@ -428,18 +439,20 @@ where
     /// state.
     #[inline]
     pub unsafe fn assume_init(self) -> Array<T, U> {
-        // `Array` is a `repr(transparent)` newtype for a generic inner type which is constrained to
-        // be `[T; N]` by the `ArraySize` impls in this crate.
-        //
-        // Since we're working with a type-erased inner type and ultimately trying to convert
-        // `[MaybeUninit<T>; N]` to `[T; N]`, we can't use simpler approaches like a pointer cast
-        // or `transmute`, since the compiler can't prove to itself that the size will be the same.
-        //
-        // We've taken unique ownership of `self`, which is a `MaybeUninit` array, and as such we
-        // don't need to worry about `Drop` impls because `MaybeUninit` does not impl `Drop`.
-        // Since we have unique ownership of `self`, it's okay to make a copy because we're throwing
-        // the original away (and this should all get optimized to a noop by the compiler, anyway).
-        mem::transmute_copy(&self)
+        unsafe {
+            // `Array` is a `repr(transparent)` newtype for a generic inner type which is constrained to
+            // be `[T; N]` by the `ArraySize` impls in this crate.
+            //
+            // Since we're working with a type-erased inner type and ultimately trying to convert
+            // `[MaybeUninit<T>; N]` to `[T; N]`, we can't use simpler approaches like a pointer cast
+            // or `transmute`, since the compiler can't prove to itself that the size will be the same.
+            //
+            // We've taken unique ownership of `self`, which is a `MaybeUninit` array, and as such we
+            // don't need to worry about `Drop` impls because `MaybeUninit` does not impl `Drop`.
+            // Since we have unique ownership of `self`, it's okay to make a copy because we're throwing
+            // the original away (and this should all get optimized to a noop by the compiler, anyway).
+            mem::transmute_copy(&self)
+        }
     }
 }
 
@@ -842,6 +855,41 @@ where
     T: Zeroable,
     U: ArraySize,
 {
+}
+
+#[cfg(feature = "subtle")]
+impl<T, U> ConditionallySelectable for Array<T, U>
+where
+    Self: Copy,
+    T: ConditionallySelectable,
+    U: ArraySize,
+{
+    #[inline]
+    fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
+        let mut output = *a;
+        output.conditional_assign(b, choice);
+        output
+    }
+
+    fn conditional_assign(&mut self, other: &Self, choice: Choice) {
+        for (a_i, b_i) in self.iter_mut().zip(other) {
+            a_i.conditional_assign(b_i, choice)
+        }
+    }
+}
+
+#[cfg(feature = "subtle")]
+impl<T, U> ConstantTimeEq for Array<T, U>
+where
+    T: ConstantTimeEq,
+    U: ArraySize,
+{
+    #[inline]
+    fn ct_eq(&self, other: &Self) -> Choice {
+        self.iter()
+            .zip(other.iter())
+            .fold(Choice::from(1), |acc, (a, b)| acc & a.ct_eq(b))
+    }
 }
 
 #[cfg(feature = "zeroize")]

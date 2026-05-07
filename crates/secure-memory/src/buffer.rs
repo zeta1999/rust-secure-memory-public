@@ -21,7 +21,7 @@ const CANARY_SIZE: usize = 32;
 /// Per-process canary value, generated once from CSPRNG.
 static CANARY: LazyLock<[u8; CANARY_SIZE]> = LazyLock::new(|| {
     let mut c = [0u8; CANARY_SIZE];
-    rand::thread_rng().fill_bytes(&mut c);
+    rand::rngs::OsRng.fill_bytes(&mut c);
     c
 });
 
@@ -102,7 +102,7 @@ impl LockedBuffer {
         Self::check_size(size)?;
         Self::allocate(size, |ptr, len| {
             let s = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
-            rand::thread_rng().fill_bytes(s);
+            rand::rngs::OsRng.fill_bytes(s);
         })
     }
 
@@ -202,7 +202,7 @@ impl LockedBuffer {
         }
         {
             let s = self.as_mut_slice()?;
-            rand::thread_rng().fill_bytes(s);
+            rand::rngs::OsRng.fill_bytes(s);
         }
         if was_frozen {
             self.freeze()?;
@@ -486,7 +486,10 @@ mod tests {
     }
 
     // ── Property-based tests (proptest) ──────────────────────
-
+    // Skipped under Miri: `seal_open_roundtrip` runs ChaCha20-Poly1305 per case
+    // and proptest fires 256 cases by default. The unit tests above already
+    // exercise the same code paths at fixed inputs, which is what Miri needs.
+    #[cfg(not(miri))]
     mod proptests {
         use super::*;
         use proptest::prelude::*;
