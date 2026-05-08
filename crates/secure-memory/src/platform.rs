@@ -346,7 +346,11 @@ mod kani_proofs {
         let align: usize = kani::any();
         kani::assume(align > 0 && align.is_power_of_two() && align <= 1 << 20);
         let n: usize = kani::any();
-        kani::assume(n <= usize::MAX - align);
+        // Tighter than `usize::MAX - align`: that's enough for one call of
+        // round_up not to overflow, but the *output* r can be as large as
+        // `usize::MAX - align + 1`, which then overflows on `r + align - 1`
+        // inside the second call. Subtracting 2*align - 1 leaves room for both.
+        kani::assume(n <= usize::MAX - (2 * align - 1));
         let r = round_up(n, align);
         assert_eq!(round_up(r, align), r);
     }
