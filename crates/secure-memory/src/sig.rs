@@ -63,6 +63,30 @@ impl SigKeyPair {
         })
     }
 
+    /// Reconstruct a key pair from previously exported raw FIPS 204 encodings
+    /// (e.g. a persisted identity). The signing key is placed back into locked
+    /// memory. Callers are responsible for protecting `signing_key` at rest.
+    pub fn from_bytes(signing_key: &[u8], verifying_key: &[u8]) -> Result<Self, Error> {
+        if signing_key.len() != SK_SIZE {
+            return Err(Error::InvalidSize(format!(
+                "ML-DSA-65 SK must be {SK_SIZE} bytes, got {}",
+                signing_key.len()
+            )));
+        }
+        if verifying_key.len() != VK_SIZE {
+            return Err(Error::InvalidSize(format!(
+                "ML-DSA-65 VK must be {VK_SIZE} bytes, got {}",
+                verifying_key.len()
+            )));
+        }
+        let mut sk = signing_key.to_vec();
+        let locked = LockedBuffer::from_bytes_move(&mut sk)?;
+        Ok(Self {
+            signing_key: locked,
+            verifying_key: verifying_key.to_vec(),
+        })
+    }
+
     /// Verifying (public) key — safe to share.
     pub fn verifying_key(&self) -> &[u8] {
         &self.verifying_key
@@ -149,6 +173,23 @@ mod tests {
         let sig = kp.sign(msg).unwrap();
         assert_eq!(sig.len(), SIG_SIZE);
         assert!(SigKeyPair::verify(kp.verifying_key(), msg, &sig).unwrap());
+    }
+
+    #[cfg_attr(miri, ignore)]
+    #[test]
+    fn export_import_roundtrip() {
+        let kp = SigKeyPair::generate().unwrap();
+        let sk = kp.signing_key().as_slice().unwrap().to_vec();
+        let vk = kp.verifying_key().to_vec();
+        // reload from exported bytes
+        let kp2 = SigKeyPair::from_bytes(&sk, &vk).unwrap();
+        let sig = kp2.sign(b"persisted identity").unwrap();
+        assert!(SigKeyPair::verify(&vk, b"persisted identity", &sig).unwrap());
+        // deterministic signing => reloaded key signs identically to the original
+        assert_eq!(kp.sign(b"persisted identity").unwrap(), sig);
+        // size validation
+        assert!(SigKeyPair::from_bytes(&[0u8; 10], &vk).is_err());
+        assert!(SigKeyPair::from_bytes(&sk, &[0u8; 10]).is_err());
     }
 
     #[cfg_attr(miri, ignore)]
