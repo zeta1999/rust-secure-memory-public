@@ -56,7 +56,7 @@ pub use stream::Stream;
 pub use crypto::vdf_stretch;
 pub use crypto::{
     decrypt, decrypt_aad, derive_key_argon2, derive_key_combined, encrypt, encrypt_aad,
-    sequential_stretch,
+    open_with_nonce, seal_with_nonce, sequential_stretch,
 };
 
 // ── Global operations ────────────────────────────────────────

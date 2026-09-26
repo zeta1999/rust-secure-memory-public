@@ -66,27 +66,84 @@ pub fn encrypt_aad(key: &[u8], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>, 
         });
     }
 
-    let cipher = XChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
-
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
-
-    let ct = cipher
-        .encrypt(
-            nonce,
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
+    let ct = seal_with_nonce(key, &nonce_bytes, plaintext, aad)?;
 
     let mut out = Vec::with_capacity(NONCE_SIZE + ct.len());
     out.extend_from_slice(&nonce_bytes);
     out.extend_from_slice(&ct);
     Ok(out)
+}
+
+/// Encrypt with a **caller-supplied** nonce, returning `ciphertext || tag` with
+/// no nonce prefix (the caller already knows the nonce).
+///
+/// # Danger
+///
+/// [`encrypt_aad`] picks a random nonce for you and is what you want almost
+/// always. This function hands you the one rule XChaCha20-Poly1305 cannot
+/// enforce for itself:
+///
+/// > **A `(key, nonce)` pair must NEVER encrypt two different plaintexts.**
+///
+/// Violating it does not degrade gracefully. It leaks the XOR of the plaintexts
+/// and enables Poly1305 forgery. The 192-bit nonce gives enormous headroom
+/// against *random* collision; it gives none whatsoever against a deterministic
+/// nonce reused under a fixed key.
+///
+/// It exists for **content-derived keys**, where the key is a function of the
+/// plaintext — so a repeated key implies identical plaintext, and a
+/// deterministic nonce is therefore safe by construction. That is what makes
+/// convergent encryption, and hence deduplication of encrypted data, possible
+/// at all.
+///
+/// If your key is not derived from the content it protects, use
+/// [`encrypt_aad`] instead.
+pub fn seal_with_nonce(
+    key: &[u8],
+    nonce: &[u8; NONCE_SIZE],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if key.len() != KEY_SIZE {
+        return Err(Error::InvalidKeySize {
+            expected: KEY_SIZE,
+            got: key.len(),
+        });
+    }
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| Error::EncryptionFailed(e.to_string()))?;
+    cipher
+        .encrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|e| Error::EncryptionFailed(e.to_string()))
+}
+
+/// Decrypt data produced by [`seal_with_nonce`]. The same `nonce` and `aad`
+/// must be supplied; neither is carried in the ciphertext.
+pub fn open_with_nonce(
+    key: &[u8],
+    nonce: &[u8; NONCE_SIZE],
+    data: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if key.len() != KEY_SIZE {
+        return Err(Error::InvalidKeySize {
+            expected: KEY_SIZE,
+            got: key.len(),
+        });
+    }
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| Error::DecryptionFailed(e.to_string()))?;
+    cipher
+        .decrypt(XNonce::from_slice(nonce), Payload { msg: data, aad })
+        .map_err(|e| Error::DecryptionFailed(e.to_string()))
 }
 
 /// Decrypt data produced by [`encrypt_aad`]; the same `aad` must be supplied.
@@ -330,6 +387,55 @@ mod tests {
                 prop_assert!(decrypt_aad(&key, &ct, &bad_aad).is_err());
             }
         }
+    }
+
+    // ── seal_with_nonce: deterministic AEAD ──────────────────
+
+    #[test]
+    fn seal_with_nonce_is_deterministic() {
+        // The property the whole convergent-encryption design rests on: same
+        // key, nonce and plaintext must give byte-identical output, or
+        // deduplicating encrypted data is impossible.
+        let key = [7u8; KEY_SIZE];
+        let nonce = [9u8; NONCE_SIZE];
+        let a = seal_with_nonce(&key, &nonce, b"same content", b"").unwrap();
+        let b = seal_with_nonce(&key, &nonce, b"same content", b"").unwrap();
+        assert_eq!(a, b);
+        // Contrast: the random-nonce API by design never repeats, which is why
+        // it cannot be used for convergent encryption.
+        assert_ne!(
+            encrypt(&key, b"same content").unwrap(),
+            encrypt(&key, b"same content").unwrap()
+        );
+    }
+
+    #[test]
+    fn seal_open_with_nonce_roundtrip() {
+        let key = [3u8; KEY_SIZE];
+        let nonce = [1u8; NONCE_SIZE];
+        let ct = seal_with_nonce(&key, &nonce, b"payload", b"header").unwrap();
+        assert_eq!(
+            open_with_nonce(&key, &nonce, &ct, b"header").unwrap(),
+            b"payload"
+        );
+        // No nonce prefix: output is exactly ciphertext || tag.
+        assert_eq!(ct.len(), b"payload".len() + 16);
+    }
+
+    #[test]
+    fn open_with_nonce_rejects_wrong_nonce_key_or_aad() {
+        let key = [3u8; KEY_SIZE];
+        let nonce = [1u8; NONCE_SIZE];
+        let ct = seal_with_nonce(&key, &nonce, b"payload", b"header").unwrap();
+        assert!(open_with_nonce(&key, &[2u8; NONCE_SIZE], &ct, b"header").is_err());
+        assert!(open_with_nonce(&[4u8; KEY_SIZE], &nonce, &ct, b"header").is_err());
+        assert!(open_with_nonce(&key, &nonce, &ct, b"different").is_err());
+    }
+
+    #[test]
+    fn seal_with_nonce_rejects_bad_key_size() {
+        assert!(seal_with_nonce(&[0u8; 16], &[0u8; NONCE_SIZE], b"x", b"").is_err());
+        assert!(open_with_nonce(&[0u8; 16], &[0u8; NONCE_SIZE], b"x", b"").is_err());
     }
 }
 
