@@ -63,6 +63,44 @@ impl SigKeyPair {
         })
     }
 
+    /// Derive a key pair **deterministically** from a 32-byte seed.
+    ///
+    /// This is FIPS 204's `ML-DSA.KeyGen_internal(xi)`, which the standard
+    /// specifies precisely so that a key can be reproduced from stored entropy
+    /// rather than stored in full.
+    ///
+    /// # Why this exists alongside [`generate`](Self::generate)
+    ///
+    /// A system that needs several **role-separated** identities — one keypair
+    /// for signing X, a distinct one for signing Y, so that a compromise of one
+    /// role cannot forge the other — has two options. It can generate each at
+    /// random and persist all of them, at 4032 bytes of secret per role; or it
+    /// can hold one seed and derive each role's key from it under a distinct
+    /// KDF context. The second keeps a vault small, makes a backup of that one
+    /// seed sufficient to restore every identity, and means a new role costs a
+    /// new context string rather than a new stored secret.
+    ///
+    /// # The seed is a secret key
+    ///
+    /// `xi` **is** the private key, in compressed form: whoever holds it can
+    /// reconstruct the signing key exactly. It must come from a CSPRNG or from
+    /// a KDF over one, must never be reused across roles, and deserves the same
+    /// protection as the 4032-byte encoding it expands to.
+    pub fn from_seed(xi: &[u8; 32]) -> Result<Self, Error> {
+        let kp = MlDsa65::key_gen_internal(xi.into());
+
+        let vk_enc: EncodedVerifyingKey<MlDsa65> = kp.verifying_key().encode();
+        let sk_enc: EncodedSigningKey<MlDsa65> = kp.signing_key().encode();
+
+        let mut sk_bytes: Vec<u8> = AsRef::<[u8]>::as_ref(&sk_enc).to_vec();
+        let signing_key = LockedBuffer::from_bytes_move(&mut sk_bytes)?;
+
+        Ok(Self {
+            signing_key,
+            verifying_key: AsRef::<[u8]>::as_ref(&vk_enc).to_vec(),
+        })
+    }
+
     /// Reconstruct a key pair from previously exported raw FIPS 204 encodings
     /// (e.g. a persisted identity). The signing key is placed back into locked
     /// memory. Callers are responsible for protecting `signing_key` at rest.
@@ -151,6 +189,41 @@ impl SigKeyPair {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn from_seed_is_deterministic() {
+        // The property the whole point rests on: one stored seed reproduces one
+        // identity, so a vault holds 32 bytes per role instead of 4032.
+        let xi = [0x42u8; 32];
+        let a = SigKeyPair::from_seed(&xi).unwrap();
+        let b = SigKeyPair::from_seed(&xi).unwrap();
+        assert_eq!(a.verifying_key(), b.verifying_key());
+
+        let msg = b"role-separated message";
+        let sa = a.sign(msg).unwrap();
+        assert!(SigKeyPair::verify(b.verifying_key(), msg, &sa).unwrap());
+    }
+
+    #[test]
+    fn different_seeds_give_unrelated_identities() {
+        // Role separation: a signature made under one role must not verify
+        // under another, or the separation is decorative.
+        let a = SigKeyPair::from_seed(&[1u8; 32]).unwrap();
+        let b = SigKeyPair::from_seed(&[2u8; 32]).unwrap();
+        assert_ne!(a.verifying_key(), b.verifying_key());
+
+        let msg = b"signed by role a only";
+        let sig = a.sign(msg).unwrap();
+        assert!(!SigKeyPair::verify(b.verifying_key(), msg, &sig).unwrap_or(false));
+    }
+
+    #[test]
+    fn seeded_keys_have_the_standard_sizes() {
+        let kp = SigKeyPair::from_seed(&[7u8; 32]).unwrap();
+        assert_eq!(kp.verifying_key().len(), VK_SIZE);
+        assert_eq!(kp.signing_key().len(), SK_SIZE);
+        assert_eq!(kp.sign(b"m").unwrap().len(), SIG_SIZE);
+    }
     use super::*;
 
     // ML-DSA-65 keygen + sign + verify each take ~2–5 s under Miri (sign uses
